@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rclone-copy-script
+data:
+  copy.sh: |
+    #!/bin/sh
+    # Copies a mounted PVC to an S3-compatible object store.
+    #
+    # Required:
+    #   DEST_HOST               object store hostname, e.g. s3.example.com
+    #                           or s3.example.com:9443 (https:// is assumed;
+    #                           prefix with http:// or https:// to override)
+    #   DEST_PATH               bucket/folder, e.g. pvc-backups/my-app-data
+    #   DEST_ACCESS_KEY_ID      } S3 credentials, normally from a Secret
+    #   DEST_SECRET_ACCESS_KEY  }
+    # Optional:
+    #   SOURCE_PATH    where the PVC is mounted (default /source)
+    #   DEST_REGION    S3 region (default: none)
+    #   DEST_PROVIDER  rclone S3 provider name (default: Other)
+    #   EXTRA_ARGS     extra rclone flags, e.g. "--dry-run"
+    set -eu
+
+    SOURCE_PATH="${SOURCE_PATH:-/source}"
+    : "${DEST_HOST:?DEST_HOST must be set, e.g. s3.example.com}"
+    : "${DEST_PATH:?DEST_PATH must be set, e.g. pvc-backups/my-app-data}"
+    : "${DEST_ACCESS_KEY_ID:?DEST_ACCESS_KEY_ID must be set}"
+    : "${DEST_SECRET_ACCESS_KEY:?DEST_SECRET_ACCESS_KEY must be set}"
+
+    if [ ! -d "$SOURCE_PATH" ]; then
+      echo "ERROR: source path $SOURCE_PATH does not exist" >&2
+      exit 1
+    fi
+
+    case "$DEST_HOST" in
+      http://*|https://*) endpoint="$DEST_HOST" ;;
+      *)                  endpoint="https://${DEST_HOST}" ;;
+    esac
+
+    # Define an rclone remote called "dest" purely from env vars.
+    export RCLONE_CONFIG_DEST_TYPE=s3
+    export RCLONE_CONFIG_DEST_PROVIDER="${DEST_PROVIDER:-Other}"
+    export RCLONE_CONFIG_DEST_ENDPOINT="$endpoint"
+    export RCLONE_CONFIG_DEST_ACCESS_KEY_ID="$DEST_ACCESS_KEY_ID"
+    export RCLONE_CONFIG_DEST_SECRET_ACCESS_KEY="$DEST_SECRET_ACCESS_KEY"
+    export RCLONE_CONFIG_DEST_NO_CHECK_BUCKET=true     # bucket must already exist
+    if [ -n "${DEST_REGION:-}" ]; then
+      export RCLONE_CONFIG_DEST_REGION="$DEST_REGION"
+    fi
+
+    echo "Copying ${SOURCE_PATH} -> ${endpoint}/${DEST_PATH}"
+
+    # shellcheck disable=SC2086  # EXTRA_ARGS is intentionally word-split
+    exec rclone copy "$SOURCE_PATH" "dest:${DEST_PATH}" \
+      --stats=1m --stats-one-line --stats-log-level=NOTICE \
+      ${EXTRA_ARGS:-}
+---
+# Credentials for the object store. Endpoint and paths are passed per Job.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: objectstore-credentials
+type: Opaque
+stringData:
+  DEST_ACCESS_KEY_ID: "CHANGEME"
+  DEST_SECRET_ACCESS_KEY: "CHANGEME"

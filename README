@@ -1,0 +1,5 @@
+SOURCE_PVC=my-app-data DEST_HOST=s3.example.com DEST_PATH=pvc-backups/my-app-data envsubst '${SOURCE_PVC} ${DEST_HOST} ${DEST_PATH}' < rclone-job.yaml | kubectl create -f -
+
+
+
+Podman pull quay.io/spidee/rlcone:1.75

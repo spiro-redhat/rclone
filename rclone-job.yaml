@@ -1,0 +1,85 @@
+# One Job per PVC. Source and destination come from your shell:
+#
+#   SOURCE_PVC=my-app-data DEST_HOST=s3.example.com DEST_PATH=pvc-backups/my-app-data \
+#     envsubst '${SOURCE_PVC} ${DEST_HOST} ${DEST_PATH}' < rclone-job.yaml | kubectl create -f -
+#
+#   SOURCE_PVC  name of the PVC to copy
+#   DEST_HOST   object store hostname (optionally :port, or a full http(s):// URL)
+#   DEST_PATH   bucket/folder on the object store
+#
+# Uses generateName + 'kubectl create' so the same PVC can be copied again
+# without deleting the previous Job.
+#
+# RWO PVCs: if the PVC is attached to a running pod on another node, this
+# pod will hang in ContainerCreating (Multi-Attach). Scale the app down
+# first, or schedule the Job on the same node.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: rclone-copy-${SOURCE_PVC}-
+  labels:
+    app: rclone-copy
+    pvc: ${SOURCE_PVC}
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 604800     # clean up after 7 days
+  template:
+    metadata:
+      labels:
+        app: rclone-copy
+        pvc: ${SOURCE_PVC}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rclone
+          image: registry.example.com/tools/rclone-ubi:1.75.2
+          # No command: the image entrypoint runs /scripts/copy.sh
+          env:
+            - name: DEST_HOST
+              value: "${DEST_HOST}"
+            - name: DEST_PATH
+              value: "${DEST_PATH}"
+            # - name: DEST_REGION       # optional
+            #   value: ""
+            - name: EXTRA_ARGS
+              value: ""                 # e.g. "--dry-run"
+            - name: RCLONE_TRANSFERS
+              value: "8"
+          envFrom:
+            - secretRef:
+                name: objectstore-credentials   # provides DEST_ACCESS_KEY_ID / DEST_SECRET_ACCESS_KEY
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: source
+              mountPath: /source
+              readOnly: true
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: ${SOURCE_PVC}
+            readOnly: true
+        - name: script
+          configMap:
+            name: rclone-copy-script
+            defaultMode: 0555
+        - name: tmp
+          emptyDir: {}
